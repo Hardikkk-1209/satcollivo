@@ -1,107 +1,119 @@
 # Satellite Collision Avoidance — Real Data System
 
-This is the real-data version: SGP4 propagation, provenance-weighted
-uncertainty (DPWC), conjunction assessment, and maneuver planning, all
-backed by a SQLite database populated from **actual CelesTrak / Space-Track
-data** — not hand-written fixtures.
+SatCollivo is a real-data satellite collision-avoidance prototype using SGP4 propagation, provenance-weighted uncertainty (DPWC), conjunction assessment, probability of collision (Pc), and maneuver planning, backed by SQLite data from CelesTrak / Space-Track.
 
-## Why you have to run the data step yourself
-
-CelesTrak blocks automated fetching from sandboxed environments (its
-robots.txt disallows it), and Space-Track requires an authenticated login.
-Neither is reachable from where this was built. **You need to run the
-ingestion scripts on your own machine.** Everything else (the actual
-algorithm) is complete and tested.
-
-## Setup
+## Backend setup
 
 ```bash
-pip install sgp4 numpy scipy requests
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-## Step 1: Pull real data (run locally)
+### Pull real orbital data locally
 
-**CelesTrak (no account needed — start here):**
 ```bash
 # ISS specifically
 python data/fetch_celestrak.py --catnr 25544 --out-db data/tracking.db
 
-# A whole debris field (2009 Iridium-Cosmos collision debris)
+# A whole debris field
 python data/fetch_celestrak.py --group cosmos-2251-debris --out-db data/tracking.db
 
-# All active payloads (thousands of objects -- good stress test)
+# All active payloads
 python data/fetch_celestrak.py --group active --out-db data/tracking.db
 ```
-CelesTrak doesn't update more than once every 2 hours — don't poll faster than that.
 
-**Space-Track (optional, needs a free account):**
-```bash
-export SPACETRACK_USER="you@example.com"
-export SPACETRACK_PASS="yourpassword"
-python data/fetch_spacetrack.py --norad-ids 25544 --out-db data/tracking.db
-python data/fetch_spacetrack.py --recent-debris --out-db data/tracking.db
-```
+CelesTrak public data should not be polled more often than its update cadence. Space-Track requires an authenticated account.
 
-## Step 2: Run an assessment against real data
+### CLI assessment
 
 ```bash
 python run.py --assess --primary-norad-id 25544 --hours 24
 ```
 
-This propagates every tracked object currently in your database forward
-24 hours, screens for close approaches to the ISS, computes DPWC-weighted
-collision probability for anything within range, and recommends maneuvers
-where warranted. Results are also written to the `conjunction_events` table
-for later review.
+The CLI propagates the primary and candidate objects, applies the altitude pre-filter, searches for TCA, computes covariance/Pc, and stores the top conjunction events.
 
-## Everything else, via the CLI
+## Mission-control frontend
+
+The repository includes a React/Vite frontend and FastAPI bridge around the existing scientific engine.
+
+Start the backend from the repository root:
 
 ```bash
-python run.py --help
+source venv/bin/activate
+uvicorn api:app --reload
 ```
 
-## What's tested vs. what needs your real run
+Start the frontend in a second terminal:
 
-`tests/test_pipeline.py` verifies the *logic* is correct — ingestion parsing,
-deduplication, staleness calculation from real epochs, altitude
-pre-filtering, and the full detect → Pc → maneuver path — using data shaped
-exactly like a real CelesTrak response (`tests/fixtures_celestrak_response.json`).
-That file is clearly a **test fixture**, not a live pull — run the Step 1
-commands above to get actual current orbital data.
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`.
+
+### Frontend capabilities
+
+- Live database and system-health cards
+- Searchable NORAD object catalog
+- Actual SGP4-propagated orbit track for the selected object
+- Primary-satellite selection and assessment controls
+- Asynchronous conjunction assessment jobs so the browser does not block during the calculation
+- TCA, miss distance, Pc, risk classification, and maneuver recommendation results
+- Stored conjunction register and threat monitor
+- Maneuver analysis view with prototype safety warning
+- Data/source/system pipeline view
+
+The frontend calls these API endpoints:
+
+```text
+GET  /api/health
+GET  /api/stats
+GET  /api/satellites
+GET  /api/satellites/{norad_id}
+GET  /api/satellites/{norad_id}/orbit
+GET  /api/events
+GET  /api/events/{event_id}
+POST /api/assessments
+GET  /api/assessments/{job_id}
+```
+
+## Architecture
+
+```text
+CelesTrak / Space-Track
+        |
+        v
+   SQLite tracking DB
+        |
+        v
+  Existing Python engine
+   |      |       |
+  SGP4   DPWC   Conjunction/Pc
+                 |
+                 v
+            Maneuver planner
+                 |
+                 v
+             FastAPI API
+                 |
+                 v
+          React/Vite console
+```
+
+## Tests
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-## Project layout
+## Important prototype limitations
 
-```
-collision_avoidance_v2/
-├── data/
-│   ├── db.py                  # SQLite schema + storage layer
-│   ├── fetch_celestrak.py     # real, no-login data source (run locally)
-│   └── fetch_spacetrack.py    # real, login-required source (run locally)
-├── src/
-│   ├── propagation.py         # SGP4, now reads from the database
-│   ├── uncertainty.py         # DPWC — provenance-weighted covariance
-│   ├── conjunction.py         # TCA search, Pc calc, altitude pre-filter
-│   └── maneuver.py            # avoidance delta-v planner
-├── tests/
-│   ├── fixtures_celestrak_response.json   # realistic test data (NOT live)
-│   └── test_pipeline.py
-└── run.py                     # CLI: ingest data, run assessments
-```
+- Pc currently uses Monte Carlo integration; production accuracy should use a validated adaptive method.
+- Maneuver planning is a linearized prototype estimate and is not flight-ready.
+- DPWC covariance constants are illustrative and require calibration against tracking-accuracy studies.
+- CelesTrak records do not expose full sensor provenance, so the uncertainty layer falls back to the TLE-only tier unless richer provenance is available.
 
-## Known limitations (be aware before relying on this operationally)
-
-- Pc calculation uses Monte Carlo integration — fine for prototyping,
-  should move to adaptive quadrature for production accuracy.
-- Maneuver planning uses a linearized heuristic, not a real Clohessy-Wiltshire
-  or numerical optimizer — treat delta-v recommendations as ballpark, not
-  flight-ready.
-- DPWC's covariance constants (sensor/RCS/staleness weights) are illustrative
-  starting points, not calibrated against real tracking-accuracy studies.
-- CelesTrak's public data doesn't include per-record sensor provenance, so
-  DPWC currently falls back to a conservative `TLE_ONLY` sensor tier for all
-  ingested objects regardless of source, until you have access to richer
-  provenance data (e.g. your own tracking, or Space-Track's expanded CDM access).
+**This project is decision-support software, not an operational flight-safety system.**
