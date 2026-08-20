@@ -4,3 +4,5 @@ __pycache__/
 data/tracking.db
 .DS_Store
 .env
+frontend/node_modules/
+frontend/dist/
