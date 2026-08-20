@@ -14,7 +14,7 @@ from src.conjunction import assess_conjunctions
 from src.maneuver import plan_avoidance_burn
 
 DB_PATH = DEFAULT_DB_PATH
-app = FastAPI(title="SatCollivo API", version="0.2.0")
+app = FastAPI(title="SatCollivo API", version="0.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 jobs = {}
 jobs_lock = threading.Lock()
@@ -94,7 +94,7 @@ def conjunctions(norad_id: int = Query(...), hours: float = 24, screening_km: fl
     try: primary=load_primary(norad_id, db_path=DB_PATH); candidates=load_candidates(exclude_norad_id=norad_id, db_path=DB_PATH)
     except ValueError as exc: raise HTTPException(404, str(exc))
     start=datetime.now(timezone.utc); events,skipped=assess_conjunctions(primary,candidates,start,start+timedelta(hours=hours),screening_distance_km=screening_km)
-    return {"events":[{"primary":{"norad_id":e.primary.norad_id,"name":e.primary.name},"secondary":{"norad_id":e.secondary.norad_id,"name":e.secondary.name},"tca":e.tca.isoformat(),"miss_distance_km":round(e.miss_distance_km,6),"probability_of_collision":e.pc,"maneuver":plan_avoidance_burn(e)} for e in events],"skipped_by_altitude":skipped}
+    return {"event_count":len(events),"candidate_count":len(candidates),"skipped_by_altitude":skipped,"events":[{"primary":{"norad_id":e.primary.norad_id,"name":e.primary.name},"secondary":{"norad_id":e.secondary.norad_id,"name":e.secondary.name},"tca":e.tca.isoformat(),"miss_distance_km":round(e.miss_distance_km,6),"probability_of_collision":e.pc,"maneuver":plan_avoidance_burn(e)} for e in events]}
 
 def _run_assessment(job_id, request):
     with jobs_lock: jobs[job_id]["status"]="running"
@@ -107,7 +107,8 @@ def _run_assessment(job_id, request):
             maneuver=plan_avoidance_burn(e)
             record_conjunction_event({"primary_norad_id":e.primary.norad_id,"secondary_norad_id":e.secondary.norad_id,"tca":e.tca.isoformat(),"miss_distance_km":e.miss_distance_km,"probability_of_collision":e.pc,"maneuver_recommended":maneuver.get("maneuver_needed",False),"maneuver_details":maneuver},db_path=DB_PATH)
             results.append({"primary":{"norad_id":e.primary.norad_id,"name":e.primary.name},"secondary":{"norad_id":e.secondary.norad_id,"name":e.secondary.name},"tca":e.tca.isoformat(),"miss_distance_km":round(e.miss_distance_km,6),"probability_of_collision":e.pc,"maneuver":maneuver})
-        with jobs_lock: jobs[job_id].update({"status":"complete","result":{"primary":{"norad_id":primary.norad_id,"name":primary.name},"candidate_count":len(candidates),"skipped_by_altitude":skipped,"window_hours":request.hours,"screening_km":request.screening_km,"events":results}})
+        summary="NO_QUALIFYING_CONJUNCTIONS" if not results else "CONJUNCTIONS_DETECTED"
+        with jobs_lock: jobs[job_id].update({"status":"complete","result":{"summary":summary,"primary":{"norad_id":primary.norad_id,"name":primary.name},"candidate_count":len(candidates),"skipped_by_altitude":skipped,"detailed_candidates":max(0,len(candidates)-skipped),"window_hours":request.hours,"screening_km":request.screening_km,"event_count":len(results),"events":results}})
     except Exception as exc:
         with jobs_lock: jobs[job_id].update({"status":"failed","error":str(exc)})
 
