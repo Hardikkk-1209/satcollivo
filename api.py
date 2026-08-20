@@ -66,7 +66,12 @@ def satellites(object_type: str | None = None, search: str | None = None, limit:
     if search:
         needle = search.lower().strip()
         rows = [r for r in rows if needle in str(r.get("name","")).lower() or needle in str(r["norad_id"])]
-    rows.sort(key=lambda r: (r.get("name") or "", r["norad_id"]))
+        rows.sort(key=lambda r: (r.get("name") or "", r["norad_id"]))
+    else:
+        # Keep the primary demonstration target visible at the top of the catalog.
+        # The frontend can therefore recover the default ISS target even after its
+        # unfiltered catalog request replaces the initial NORAD-25544 search.
+        rows.sort(key=lambda r: (0 if r["norad_id"] == 25544 else 1, r.get("name") or "", r["norad_id"]))
     return [serialize_object(r) for r in rows[:limit]]
 
 @app.get("/api/satellites/{norad_id}")
