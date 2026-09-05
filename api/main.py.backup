@@ -1,0 +1,158 @@
+from datetime import datetime, timedelta, timezone
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+from data.db import init_db, latest_all, latest_for_norad_id
+from src.propagation import load_primary, load_candidates
+from src.conjunction import assess_conjunctions
+
+
+DB_PATH = "data/tracking.db"
+
+app = FastAPI(
+    title="Satellite Collision Avoidance API",
+    description="Backend API for orbital conjunction and collision-risk analysis.",
+    version="0.1.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def startup():
+    init_db(DB_PATH)
+
+
+@app.get("/")
+def root():
+    return {
+        "name": "Satellite Collision Avoidance API",
+        "status": "online",
+    }
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy",
+        "database": DB_PATH,
+    }
+
+
+@app.get("/satellites")
+def get_satellites():
+    """
+    Return all currently tracked objects.
+    """
+
+    objects = latest_all(db_path=DB_PATH)
+
+    return {
+        "count": len(objects),
+        "objects": objects,
+    }
+
+
+@app.get("/satellites/{norad_id}")
+def get_satellite(norad_id: int):
+    """
+    Return the latest orbital record for a specific NORAD ID.
+    """
+
+    satellite = latest_for_norad_id(
+        norad_id,
+        db_path=DB_PATH,
+    )
+
+    if satellite is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No object found for NORAD ID {norad_id}",
+        )
+
+    return satellite
+
+
+@app.post("/assess/{norad_id}")
+def assess_satellite(
+    norad_id: int,
+    hours: float = 24.0,
+    screening_km: float = 25.0,
+    top: int = 10,
+):
+    """
+    Run conjunction assessment for any tracked satellite.
+    """
+
+    try:
+        primary = load_primary(
+            norad_id,
+            db_path=DB_PATH,
+        )
+
+        candidates = load_candidates(
+            exclude_norad_id=norad_id,
+            db_path=DB_PATH,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        )
+
+    if not candidates:
+        return {
+            "primary": {
+                "norad_id": primary.norad_id,
+                "name": primary.name,
+            },
+            "events": [],
+            "message": "No candidate objects found.",
+        }
+
+    start = datetime.now(timezone.utc)
+    end = start + timedelta(hours=hours)
+
+    events, skipped = assess_conjunctions(
+        primary,
+        candidates,
+        start,
+        end,
+        screening_distance_km=screening_km,
+    )
+
+    results = []
+
+    for event in events[:top]:
+        results.append(
+            {
+                "primary_norad_id": event.primary.norad_id,
+                "primary_name": event.primary.name,
+                "secondary_norad_id": event.secondary.norad_id,
+                "secondary_name": event.secondary.name,
+                "tca": event.tca.isoformat(),
+                "miss_distance_km": event.miss_distance_km,
+                "probability_of_collision": event.pc,
+            }
+        )
+
+    return {
+        "primary": {
+            "norad_id": primary.norad_id,
+            "name": primary.name,
+        },
+        "analysis_window_hours": hours,
+        "screening_distance_km": screening_km,
+        "candidate_count": len(candidates),
+        "filtered_out": skipped,
+        "conjunction_count": len(events),
+        "events": results,
+    }
