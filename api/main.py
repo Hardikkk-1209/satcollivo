@@ -138,9 +138,15 @@ def run_assessment(norad_id: int, hours: float, screening_km: float, top: int):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
+    if primary.record.get("docked"):
+        raise HTTPException(
+            status_code=400,
+            detail="The selected object is currently docked. Select its host station or spacecraft for collision assessment."
+        )
+
     start = datetime.now(timezone.utc)
     end = start + timedelta(hours=hours)
-    events, skipped = assess_conjunctions(
+    events, skipped, docked_excluded = assess_conjunctions(
         primary,
         candidates,
         start,
@@ -182,6 +188,7 @@ def run_assessment(norad_id: int, hours: float, screening_km: float, top: int):
         "screening_distance_km": screening_km,
         "candidate_count": len(candidates),
         "filtered_out": skipped,
+        "docked_excluded": docked_excluded,
         "conjunction_count": len(events),
         "events": serialized,
     }
@@ -218,6 +225,7 @@ def create_assessment(payload: dict):
             "candidate_count": result["candidate_count"],
             "detailed_candidates": len(result["events"]),
             "filtered_out": result["filtered_out"],
+            "docked_excluded": result["docked_excluded"],
             "window_hours": result["analysis_window_hours"],
             "screening_km": result["screening_distance_km"],
             "events": result["events"],
@@ -255,9 +263,27 @@ def api_events(limit: int = 50):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, primary_norad_id, secondary_norad_id, tca, miss_distance_km, "
-            "probability_of_collision, assessed_at, maneuver_recommended, maneuver_details "
-            "FROM conjunction_events ORDER BY assessed_at DESC, probability_of_collision DESC LIMIT ?",
+            """
+            WITH latest AS (
+                SELECT norad_id, MAX(epoch) AS max_epoch
+                FROM tracked_objects
+                GROUP BY norad_id
+            )
+            SELECT e.id, e.primary_norad_id, e.secondary_norad_id, e.tca,
+                   e.miss_distance_km, e.probability_of_collision,
+                   e.assessed_at, e.maneuver_recommended, e.maneuver_details
+            FROM conjunction_events e
+            JOIN latest lp ON lp.norad_id = e.primary_norad_id
+            JOIN latest ls ON ls.norad_id = e.secondary_norad_id
+            JOIN tracked_objects p
+              ON p.norad_id = lp.norad_id AND p.epoch = lp.max_epoch
+            JOIN tracked_objects s
+              ON s.norad_id = ls.norad_id AND s.epoch = ls.max_epoch
+            WHERE COALESCE(p.docked, 0) = 0
+              AND COALESCE(s.docked, 0) = 0
+            ORDER BY e.assessed_at DESC, e.probability_of_collision DESC
+            LIMIT ?
+            """,
             (limit,),
         ).fetchall()
 
@@ -293,12 +319,63 @@ def api_events(limit: int = 50):
 def api_stats():
     data = stats(DB_PATH)
     with sqlite3.connect(DB_PATH) as conn:
-        event_count = conn.execute("SELECT COUNT(*) FROM conjunction_events").fetchone()[0]
+        event_count = conn.execute(
+            """
+            WITH latest AS (
+                SELECT norad_id, MAX(epoch) AS max_epoch
+                FROM tracked_objects
+                GROUP BY norad_id
+            )
+            SELECT COUNT(*)
+            FROM conjunction_events e
+            JOIN latest lp ON lp.norad_id = e.primary_norad_id
+            JOIN latest ls ON ls.norad_id = e.secondary_norad_id
+            JOIN tracked_objects p
+              ON p.norad_id = lp.norad_id AND p.epoch = lp.max_epoch
+            JOIN tracked_objects s
+              ON s.norad_id = ls.norad_id AND s.epoch = ls.max_epoch
+            WHERE COALESCE(p.docked, 0) = 0
+              AND COALESCE(s.docked, 0) = 0
+            """
+        ).fetchone()[0]
         maneuver_count = conn.execute(
-            "SELECT COUNT(*) FROM conjunction_events WHERE maneuver_recommended = 1"
+            """
+            WITH latest AS (
+                SELECT norad_id, MAX(epoch) AS max_epoch
+                FROM tracked_objects
+                GROUP BY norad_id
+            )
+            SELECT COUNT(*)
+            FROM conjunction_events e
+            JOIN latest lp ON lp.norad_id = e.primary_norad_id
+            JOIN latest ls ON ls.norad_id = e.secondary_norad_id
+            JOIN tracked_objects p
+              ON p.norad_id = lp.norad_id AND p.epoch = lp.max_epoch
+            JOIN tracked_objects s
+              ON s.norad_id = ls.norad_id AND s.epoch = ls.max_epoch
+            WHERE COALESCE(p.docked, 0) = 0
+              AND COALESCE(s.docked, 0) = 0
+              AND e.maneuver_recommended = 1
+            """
         ).fetchone()[0]
         latest_assessment = conn.execute(
-            "SELECT MAX(assessed_at) FROM conjunction_events"
+            """
+            WITH latest AS (
+                SELECT norad_id, MAX(epoch) AS max_epoch
+                FROM tracked_objects
+                GROUP BY norad_id
+            )
+            SELECT MAX(e.assessed_at)
+            FROM conjunction_events e
+            JOIN latest lp ON lp.norad_id = e.primary_norad_id
+            JOIN latest ls ON ls.norad_id = e.secondary_norad_id
+            JOIN tracked_objects p
+              ON p.norad_id = lp.norad_id AND p.epoch = lp.max_epoch
+            JOIN tracked_objects s
+              ON s.norad_id = ls.norad_id AND s.epoch = ls.max_epoch
+            WHERE COALESCE(p.docked, 0) = 0
+              AND COALESCE(s.docked, 0) = 0
+            """
         ).fetchone()[0]
         latest_fetch = conn.execute(
             "SELECT MAX(fetched_at) FROM tracked_objects"
