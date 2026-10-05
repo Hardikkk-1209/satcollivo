@@ -36,7 +36,6 @@ CREATE TABLE IF NOT EXISTS tracked_objects (
 
 CREATE INDEX IF NOT EXISTS idx_norad_id ON tracked_objects(norad_id);
 CREATE INDEX IF NOT EXISTS idx_fetched_at ON tracked_objects(fetched_at);
-CREATE INDEX IF NOT EXISTS idx_docked ON tracked_objects(docked);
 
 CREATE TABLE IF NOT EXISTS conjunction_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
