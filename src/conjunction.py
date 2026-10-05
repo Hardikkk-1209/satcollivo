@@ -4,13 +4,9 @@ and all other tracked objects, and computes Probability of Collision (Pc)
 using a Monte-Carlo-integrated Gaussian over the encounter, fed by DPWC's
 provenance-weighted covariance.
 
-Two changes from the flat-file prototype, now that we're on real data:
-  1. Tracking "staleness" is computed from the object's *actual* TLE epoch
-     vs. the assessment time, not a hand-set constant.
-  2. A cheap altitude-band pre-filter runs before the expensive TCA search,
-     since a real candidate list (e.g. CelesTrak's full debris catalog) can
-     be thousands of objects -- most of which are nowhere near the primary's
-     orbit and shouldn't hit the per-pair propagation loop at all.
+Docked objects are identified from CelesTrak metadata and excluded before
+TCA screening. They are physically co-located with a host spacecraft or
+station and should not be treated as independent collision threats.
 """
 from datetime import datetime, timedelta, timezone
 import numpy as np
@@ -19,7 +15,7 @@ from src.propagation import PropagatedObject
 from src.uncertainty import covariance_matrix_eci, combined_covariance
 
 EARTH_RADIUS_KM = 6378.137
-MU_EARTH = 398600.4418  # km^3/s^2
+MU_EARTH = 398600.4418
 
 
 class ConjunctionEvent:
@@ -38,9 +34,8 @@ class ConjunctionEvent:
 
 
 def _altitude_band_km(satrec):
-    """Rough perigee/apogee altitude (km) from mean motion + eccentricity."""
-    n_rad_s = satrec.no_kozai / 60.0  # mean motion: rev/min -> rad/s
-    a = (MU_EARTH / n_rad_s ** 2) ** (1 / 3)  # semi-major axis, km
+    n_rad_s = satrec.no_kozai / 60.0
+    a = (MU_EARTH / n_rad_s ** 2) ** (1 / 3)
     e = satrec.ecco
     perigee_alt = a * (1 - e) - EARTH_RADIUS_KM
     apogee_alt = a * (1 + e) - EARTH_RADIUS_KM
@@ -54,7 +49,6 @@ def _orbits_overlap(primary: PropagatedObject, secondary: PropagatedObject, marg
 
 
 def tracking_age_hours(record: dict, at_time: datetime) -> float:
-    """Hours between an object's TLE epoch and the assessment time -- real staleness."""
     epoch_str = record["epoch"]
     epoch = datetime.fromisoformat(epoch_str.replace("Z", "+00:00"))
     if epoch.tzinfo is None:
@@ -123,21 +117,17 @@ def assess_conjunctions(primary: PropagatedObject, candidates: list,
                           start: datetime, end: datetime,
                           hard_body_radius_km=0.02,
                           screening_distance_km=25.0,
-                          altitude_prefilter_margin_km=100.0) -> list:
-    """
-    Runs conjunction assessment for `primary` against every object in
-    `candidates` over [start, end]. Returns ConjunctionEvent list sorted
-    by descending Pc.
-
-    Applies a cheap altitude-band pre-filter before the expensive per-pair
-    TCA search -- essential once `candidates` is a real catalog slice
-    (hundreds to thousands of objects) rather than a handful of test objects.
-    """
+                          altitude_prefilter_margin_km=100.0) -> tuple:
     events = []
     skipped_by_prefilter = 0
+    skipped_docked = 0
 
     for sec in candidates:
         if sec.norad_id == primary.norad_id:
+            continue
+
+        if sec.record.get("docked"):
+            skipped_docked += 1
             continue
 
         if not _orbits_overlap(primary, sec, margin_km=altitude_prefilter_margin_km):
@@ -169,4 +159,4 @@ def assess_conjunctions(primary: PropagatedObject, candidates: list,
         events.append(ConjunctionEvent(primary, sec, tca, miss_d, pc, cov_combined))
 
     events.sort(key=lambda e: e.pc, reverse=True)
-    return events, skipped_by_prefilter
+    return events, skipped_by_prefilter, skipped_docked
