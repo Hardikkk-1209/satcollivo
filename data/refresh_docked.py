@@ -1,4 +1,8 @@
 import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data.db import init_db, set_docked_status
 from data.fetch_celestrak import fetch_docked_ids
