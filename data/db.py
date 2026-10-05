@@ -6,7 +6,7 @@ time) so the uncertainty model (DPWC) has real inputs to work from, and so
 we never silently overwrite/lose where a piece of data came from.
 
 SQLite to start -- schema is deliberately simple/portable so migrating to
-Postgres later is a straight `pg_dump`-style port, not a rewrite.
+Postgres later is a straight pg_dump-style port, not a rewrite.
 """
 import sqlite3
 import json
@@ -21,31 +21,33 @@ CREATE TABLE IF NOT EXISTS tracked_objects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     norad_id INTEGER NOT NULL,
     name TEXT,
-    object_type TEXT,              -- PAYLOAD / DEBRIS / ROCKET BODY / UNKNOWN
-    epoch TEXT NOT NULL,           -- orbit epoch (ISO 8601), from the TLE itself
+    object_type TEXT,
+    epoch TEXT NOT NULL,
     tle_line1 TEXT NOT NULL,
     tle_line2 TEXT NOT NULL,
-    source TEXT NOT NULL,          -- SPACETRACK / CELESTRAK
-    sensor TEXT,                   -- RADAR / OPTICAL / LASER_RANGING / TLE_ONLY (unknown provenance)
-    rcs_size TEXT,                 -- SMALL / MEDIUM / LARGE / NULL if unknown
-    fetched_at TEXT NOT NULL,      -- when WE pulled this record (ISO 8601, UTC)
-    raw_response TEXT,             -- original API record, for auditability
+    source TEXT NOT NULL,
+    sensor TEXT,
+    rcs_size TEXT,
+    fetched_at TEXT NOT NULL,
+    raw_response TEXT,
+    docked INTEGER NOT NULL DEFAULT 0,
     UNIQUE(norad_id, epoch, source)
 );
 
 CREATE INDEX IF NOT EXISTS idx_norad_id ON tracked_objects(norad_id);
 CREATE INDEX IF NOT EXISTS idx_fetched_at ON tracked_objects(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_docked ON tracked_objects(docked);
 
 CREATE TABLE IF NOT EXISTS conjunction_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     primary_norad_id INTEGER NOT NULL,
     secondary_norad_id INTEGER NOT NULL,
-    tca TEXT NOT NULL,             -- time of closest approach, ISO 8601
+    tca TEXT NOT NULL,
     miss_distance_km REAL NOT NULL,
     probability_of_collision REAL NOT NULL,
-    assessed_at TEXT NOT NULL,     -- when this assessment was run
+    assessed_at TEXT NOT NULL,
     maneuver_recommended INTEGER NOT NULL DEFAULT 0,
-    maneuver_details TEXT          -- JSON blob, if a maneuver was recommended
+    maneuver_details TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_conj_primary ON conjunction_events(primary_norad_id);
@@ -67,21 +69,30 @@ def get_connection(db_path=DEFAULT_DB_PATH):
 def init_db(db_path=DEFAULT_DB_PATH):
     with get_connection(db_path) as conn:
         conn.executescript(SCHEMA)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tracked_objects)").fetchall()}
+        if "docked" not in columns:
+            conn.execute("ALTER TABLE tracked_objects ADD COLUMN docked INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_docked ON tracked_objects(docked)")
 
 
 def upsert_tracked_object(record: dict, db_path=DEFAULT_DB_PATH):
-    """
-    Insert a tracked-object record. Deduplicates on (norad_id, epoch, source)
-    so re-running ingestion doesn't create duplicate rows for data we already
-    have -- only genuinely new epochs (i.e. updated orbit fits) get added.
-    """
     with get_connection(db_path) as conn:
         conn.execute(
             """
-            INSERT OR IGNORE INTO tracked_objects
+            INSERT INTO tracked_objects
                 (norad_id, name, object_type, epoch, tle_line1, tle_line2,
-                 source, sensor, rcs_size, fetched_at, raw_response)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 source, sensor, rcs_size, fetched_at, raw_response, docked)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(norad_id, epoch, source) DO UPDATE SET
+                name=excluded.name,
+                object_type=excluded.object_type,
+                tle_line1=excluded.tle_line1,
+                tle_line2=excluded.tle_line2,
+                sensor=excluded.sensor,
+                rcs_size=excluded.rcs_size,
+                fetched_at=excluded.fetched_at,
+                raw_response=excluded.raw_response,
+                docked=excluded.docked
             """,
             (
                 record["norad_id"],
@@ -95,12 +106,24 @@ def upsert_tracked_object(record: dict, db_path=DEFAULT_DB_PATH):
                 record.get("rcs_size"),
                 record.get("fetched_at", datetime.now(timezone.utc).isoformat()),
                 json.dumps(record.get("raw_response")) if record.get("raw_response") else None,
+                int(bool(record.get("docked", False))),
             ),
         )
 
 
+def set_docked_status(docked_ids, db_path=DEFAULT_DB_PATH):
+    docked_ids = {int(value) for value in docked_ids}
+    with get_connection(db_path) as conn:
+        conn.execute("UPDATE tracked_objects SET docked = 0")
+        if docked_ids:
+            placeholders = ",".join("?" for _ in docked_ids)
+            conn.execute(
+                f"UPDATE tracked_objects SET docked = 1 WHERE norad_id IN ({placeholders})",
+                tuple(docked_ids),
+            )
+
+
 def latest_for_norad_id(norad_id: int, db_path=DEFAULT_DB_PATH):
-    """Returns the most recent (by epoch) tracked-object record for a NORAD ID."""
     with get_connection(db_path) as conn:
         row = conn.execute(
             """
@@ -115,10 +138,6 @@ def latest_for_norad_id(norad_id: int, db_path=DEFAULT_DB_PATH):
 
 
 def latest_all(object_type_filter=None, db_path=DEFAULT_DB_PATH):
-    """
-    Returns the most recent record per NORAD ID currently in the database
-    -- i.e. the current best-known state of every tracked object.
-    """
     with get_connection(db_path) as conn:
         query = """
             SELECT t.* FROM tracked_objects t
@@ -161,7 +180,6 @@ def record_conjunction_event(event: dict, db_path=DEFAULT_DB_PATH):
 
 
 def stats(db_path=DEFAULT_DB_PATH):
-    """Quick sanity-check counts -- useful after every ingestion run."""
     with get_connection(db_path) as conn:
         total = conn.execute("SELECT COUNT(*) c FROM tracked_objects").fetchone()["c"]
         by_source = conn.execute(
