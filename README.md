@@ -5,6 +5,7 @@ SatCollivo is a prototype satellite collision-avoidance and conjunction-assessme
 ## What it does
 
 - Ingests orbital data from CelesTrak or Space-Track
+- Tracks CelesTrak docked/co-located object metadata so attached spacecraft are not treated as independent collision threats
 - Stores tracked-object history and provenance in SQLite
 - Propagates satellite states with SGP4
 - Filters candidates using orbital altitude overlap
@@ -47,6 +48,9 @@ python data/fetch_celestrak.py --catnr 25544 --out-db data/tracking.db
 python data/fetch_celestrak.py --group stations --out-db data/tracking.db
 python data/fetch_celestrak.py --group cosmos-2251-debris --out-db data/tracking.db
 python data/fetch_celestrak.py --group active --out-db data/tracking.db
+
+# Refresh docked/co-located object metadata without reloading the catalog
+python data/refresh_docked.py --db data/tracking.db
 ```
 
 Space-Track:
@@ -64,6 +68,7 @@ python data/fetch_spacetrack.py --norad-ids 25544 --out-db data/tracking.db
 3. Choose a 1–72 hour assessment window.
 4. Run the conjunction assessment.
 5. Review persisted conjunctions, elevated threats, and maneuver estimates.
+6. Docked ISS/CSS components are excluded from independent-object screening. If you already have an older database, run `python data/refresh_docked.py --db data/tracking.db` once before assessing.
 6. Open System to inspect database and pipeline status.
 
 ## CLI
