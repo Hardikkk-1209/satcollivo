@@ -10,15 +10,17 @@ Usage:
 import argparse
 import sys
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 
 import requests
 
 sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
 
-from data.db import init_db, upsert_tracked_object, stats
+from data.db import init_db, set_docked_status, upsert_tracked_object, stats
 
 
 BASE_URL = "https://celestrak.org/NORAD/elements/gp.php"
+DOCKED_URL = "https://celestrak.org/NORAD/elements/table.php"
 
 
 USEFUL_GROUPS = {
@@ -33,12 +35,79 @@ USEFUL_GROUPS = {
 }
 
 
-def get_object_type(group=None, name=""):
-    """
-    Determine the type of an object based on the CelesTrak group
-    or, when possible, the object name.
-    """
+class TableParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+        self.current_row = None
+        self.current_cell = None
 
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self.current_row = []
+        elif tag in ("th", "td") and self.current_row is not None:
+            self.current_cell = []
+
+    def handle_data(self, data):
+        if self.current_cell is not None:
+            self.current_cell.append(data)
+
+    def handle_endtag(self, tag):
+        if tag in ("th", "td") and self.current_row is not None and self.current_cell is not None:
+            value = " ".join("".join(self.current_cell).split())
+            self.current_row.append(value)
+            self.current_cell = None
+        elif tag == "tr" and self.current_row is not None:
+            if self.current_row:
+                self.rows.append(self.current_row)
+            self.current_row = None
+
+
+def fetch_docked_ids():
+    response = requests.get(
+        DOCKED_URL,
+        params={
+            "GROUP": "active",
+            "FORMAT": "csv",
+            "DOCKED": "",
+            "SHOW-OPS": "",
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+
+    parser = TableParser()
+    parser.feed(response.text)
+
+    header = None
+    for row in parser.rows:
+        normalized = [cell.lower() for cell in row]
+        if "norad catalog number" in normalized:
+            header = normalized
+            break
+
+    if header is None:
+        raise RuntimeError("CelesTrak docked-object table did not contain the expected catalog-number column.")
+
+    norad_index = header.index("norad catalog number")
+    docked_ids = set()
+
+    for row in parser.rows:
+        if row is header or len(row) <= norad_index:
+            continue
+        value = row[norad_index].strip().replace(",", "")
+        try:
+            docked_ids.add(int(value))
+        except ValueError:
+            continue
+
+    if not docked_ids:
+        raise RuntimeError("CelesTrak returned no docked-object catalog numbers.")
+
+    return docked_ids
+
+
+def get_object_type(group=None, name=""):
     if group in (
         "cosmos-2251-debris",
         "iridium-33-debris",
@@ -54,7 +123,6 @@ def get_object_type(group=None, name=""):
     ):
         return "PAYLOAD"
 
-    # Additional name-based detection
     name_upper = (name or "").upper()
 
     if "DEB" in name_upper or "DEBRIS" in name_upper:
@@ -73,13 +141,7 @@ def get_object_type(group=None, name=""):
 
 
 def fetch_group_or_catnr(group=None, catnr=None):
-    """
-    Fetch TLE records from CelesTrak.
-    """
-
-    params = {
-        "FORMAT": "TLE"
-    }
+    params = {"FORMAT": "TLE"}
 
     if catnr:
         params["CATNR"] = catnr
@@ -111,18 +173,7 @@ def fetch_group_or_catnr(group=None, catnr=None):
 
     records = []
 
-    # TLE format:
-    #
-    # OBJECT NAME
-    # TLE LINE 1
-    # TLE LINE 2
-    #
-    # OBJECT NAME
-    # TLE LINE 1
-    # TLE LINE 2
-
     for i in range(0, len(lines) - 2, 3):
-
         name = lines[i]
         line1 = lines[i + 1]
         line2 = lines[i + 2]
@@ -149,11 +200,7 @@ def fetch_group_or_catnr(group=None, catnr=None):
     return records
 
 
-def normalize_record(rec: dict, object_type="UNKNOWN") -> dict:
-    """
-    Convert a CelesTrak TLE record into the database schema.
-    """
-
+def normalize_record(rec: dict, object_type="UNKNOWN", docked=False) -> dict:
     line1 = rec.get("TLE_LINE1")
     line2 = rec.get("TLE_LINE2")
 
@@ -162,20 +209,8 @@ def normalize_record(rec: dict, object_type="UNKNOWN") -> dict:
             f"Record missing TLE lines, got keys: {list(rec.keys())}"
         )
 
-    # ---------------------------------------------------------
-    # Extract epoch from TLE line 1
-    #
-    # Columns 19-20 = two-digit year
-    # Columns 21-32 = day of year + fractional day
-    # ---------------------------------------------------------
-
     epoch_year = int(line1[18:20])
     epoch_day = float(line1[20:32])
-
-    # TLE year convention:
-    #
-    # 00-56 -> 2000-2056
-    # 57-99 -> 1957-1999
 
     if epoch_year < 57:
         full_year = 2000 + epoch_year
@@ -200,8 +235,6 @@ def normalize_record(rec: dict, object_type="UNKNOWN") -> dict:
 
     name = rec.get("OBJECT_NAME", "UNKNOWN")
 
-    # If the caller didn't provide a useful type,
-    # try to determine it from the name.
     if object_type == "UNKNOWN":
         object_type = get_object_type(
             name=name
@@ -219,18 +252,20 @@ def normalize_record(rec: dict, object_type="UNKNOWN") -> dict:
         "rcs_size": None,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "raw_response": rec,
+        "docked": docked,
     }
 
 
 def ingest(group=None, catnr=None, db_path=None):
-    """
-    Fetch and insert CelesTrak records into SQLite.
-    """
-
     if db_path:
         init_db(db_path)
     else:
         init_db()
+
+    print("Refreshing docked-object metadata from CelesTrak...")
+    docked_ids = fetch_docked_ids()
+    print(f"Found {len(docked_ids)} currently docked objects.")
+    set_docked_status(docked_ids, db_path) if db_path else set_docked_status(docked_ids)
 
     raw = fetch_group_or_catnr(
         group=group,
@@ -241,9 +276,7 @@ def ingest(group=None, catnr=None, db_path=None):
     errors = 0
 
     for rec in raw:
-
         try:
-
             name = rec.get("OBJECT_NAME", "")
 
             object_type = get_object_type(
@@ -253,7 +286,8 @@ def ingest(group=None, catnr=None, db_path=None):
 
             normalized = normalize_record(
                 rec,
-                object_type
+                object_type,
+                docked=int(rec.get("NORAD_CAT_ID")) in docked_ids,
             )
 
             if db_path:
@@ -273,9 +307,7 @@ def ingest(group=None, catnr=None, db_path=None):
             TypeError,
             KeyError
         ) as e:
-
             errors += 1
-
             print(
                 f"  skipped one record: {e}",
                 file=sys.stderr
