@@ -25,6 +25,7 @@ const get = (path) => req(path);
 const post = (path, body) => req(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
 function App() {
+  const [theme, setTheme] = useState(() => localStorage.getItem("satcollivo-theme") || "dark");
   const [view, setView] = useState("overview");
   const [stats, setStats] = useState(null);
   const [objects, setObjects] = useState([]);
@@ -86,7 +87,12 @@ function App() {
     }
   };
 
-  useEffect(() => {\n    document.documentElement.dataset.theme = theme;\n    localStorage.setItem("satcollivo-theme", theme);\n  }, [theme]);\n\n  useEffect(() => { refresh(); searchObjects("25544"); }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("satcollivo-theme", theme);
+  }, [theme]);
+
+  useEffect(() => { refresh(); searchObjects("25544"); }, []);
   useEffect(() => {
     const t = setTimeout(() => searchObjects(query), 250);
     return () => clearTimeout(t);
