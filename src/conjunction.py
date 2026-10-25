@@ -113,14 +113,19 @@ def probability_of_collision(miss_vector_km: np.ndarray, cov_combined_km2: np.nd
     return float(np.clip(pc, 0.0, 1.0))
 
 
-def assess_conjunctions(primary: PropagatedObject, candidates: list,
-                          start: datetime, end: datetime,
-                          hard_body_radius_km=0.02,
-                          screening_distance_km=25.0,
-                          altitude_prefilter_margin_km=100.0) -> tuple:
+def assess_conjunctions(
+    primary: PropagatedObject,
+    candidates: list,
+    start: datetime,
+    end: datetime,
+    hard_body_radius_km=0.02,
+    screening_distance_km=25.0,
+    altitude_prefilter_margin_km=100.0,
+) -> tuple:
     events = []
     skipped_by_prefilter = 0
     skipped_docked = 0
+    skipped_propagation = 0
 
     for sec in candidates:
         if sec.norad_id == primary.norad_id:
@@ -130,33 +135,66 @@ def assess_conjunctions(primary: PropagatedObject, candidates: list,
             skipped_docked += 1
             continue
 
-        if not _orbits_overlap(primary, sec, margin_km=altitude_prefilter_margin_km):
+        if not _orbits_overlap(
+            primary,
+            sec,
+            margin_km=altitude_prefilter_margin_km,
+        ):
             skipped_by_prefilter += 1
             continue
 
-        tca, miss_d = find_tca(primary, sec, start, end)
-        if tca is None or miss_d > screening_distance_km:
-            continue
+        try:
+            tca, miss_d = find_tca(primary, sec, start, end)
 
-        p1, v1 = primary.state_at(tca)
-        p2, v2 = sec.state_at(tca)
+            if tca is None or miss_d > screening_distance_km:
+                continue
 
-        cov1 = covariance_matrix_eci(
-            primary.record.get("sensor", "TLE_ONLY"),
-            primary.record.get("rcs_size"),
-            tracking_age_hours(primary.record, tca),
-            p1, v1)
-        cov2 = covariance_matrix_eci(
-            sec.record.get("sensor", "TLE_ONLY"),
-            sec.record.get("rcs_size"),
-            tracking_age_hours(sec.record, tca),
-            p2, v2)
-        cov_combined = combined_covariance(cov1, cov2)
+            p1, v1 = primary.state_at(tca)
+            p2, v2 = sec.state_at(tca)
 
-        miss_vector = p1 - p2
-        pc = probability_of_collision(miss_vector, cov_combined, hard_body_radius_km)
+            cov1 = covariance_matrix_eci(
+                primary.record.get("sensor", "TLE_ONLY"),
+                primary.record.get("rcs_size"),
+                tracking_age_hours(primary.record, tca),
+                p1,
+                v1,
+            )
 
-        events.append(ConjunctionEvent(primary, sec, tca, miss_d, pc, cov_combined))
+            cov2 = covariance_matrix_eci(
+                sec.record.get("sensor", "TLE_ONLY"),
+                sec.record.get("rcs_size"),
+                tracking_age_hours(sec.record, tca),
+                p2,
+                v2,
+            )
+
+            cov_combined = combined_covariance(cov1, cov2)
+
+            miss_vector = p1 - p2
+
+            pc = probability_of_collision(
+                miss_vector,
+                cov_combined,
+                hard_body_radius_km,
+            )
+
+            events.append(
+                ConjunctionEvent(
+                    primary,
+                    sec,
+                    tca,
+                    miss_d,
+                    pc,
+                    cov_combined,
+                )
+            )
+
+        except RuntimeError as exc:
+            if "SGP4 propagation error" in str(exc):
+                skipped_propagation += 1
+                continue
+            raise
 
     events.sort(key=lambda e: e.pc, reverse=True)
+
     return events, skipped_by_prefilter, skipped_docked

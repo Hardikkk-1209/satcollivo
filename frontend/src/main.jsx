@@ -108,97 +108,93 @@ function App() {
   const maneuvers = useMemo(() => events.filter((e) => e.maneuver_recommended), [events]);
   const selectedIsDocked = Boolean(selected?.docked);
 
+  const alt = useMemo(() => {
+    if (!orbit?.points?.length) return null;
+    const r = orbit.points.map((q) => Math.hypot(q.position_km?.x || 0, q.position_km?.y || 0, q.position_km?.z || 0) - 6371);
+    return { lo: Math.round(Math.min(...r)), hi: Math.round(Math.max(...r)) };
+  }, [orbit]);
+  const nav = [["overview", Gauge, "Overview"], ["objects", Satellite, "Objects"], ["conjunctions", Target, "Conjunctions"], ["threats", AlertTriangle, "Threats"], ["maneuvers", Zap, "Maneuvers"], ["data", Database, "System"]];
+  const flip = () => setTheme((c) => (c === "dark" ? "light" : "dark"));
+
   return (
     <div className="app">
-      <header className="topbar">
-        <button className="brand" onClick={() => setView("overview")}>
-          <span className="brand-mark"><Orbit size={20} /></span>
-          <span><strong>SatCollivo</strong><small>ORBITAL SAFETY CONSOLE</small></span>
-        </button>
-        <div className="status"><i /> SYSTEM ONLINE <button className="theme-toggle" onClick={() => setTheme(current => current === "dark" ? "light" : "dark")} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>{theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}<span>{theme === "dark" ? "LIGHT" : "DARK"}</span></button><button className="refresh" onClick={refresh} aria-label="Refresh"><RefreshCw size={15} /></button></div>
-      </header>
-
-      {error && <div className="error"><AlertTriangle size={15} /><span>{error}</span><button onClick={() => setError("")}><X size={15} /></button></div>}
-
-      <div className="layout">
-        <aside className="sidebar">
-          <nav>
-            {[
-              ["overview", Gauge, "Overview"],
-              ["objects", Satellite, "Objects"],
-              ["conjunctions", Target, "Conjunctions"],
-              ["threats", AlertTriangle, "Threats"],
-              ["maneuvers", Zap, "Maneuvers"],
-              ["data", Database, "System"]
-            ].map(([id, Icon, label]) => (
-              <button key={id} className={view === id ? "nav active" : "nav"} onClick={() => setView(id)}><Icon size={17} />{label}{id === "threats" && threats.length > 0 && <span className="count">{threats.length}</span>}{id === "maneuvers" && maneuvers.length > 0 && <span className="count soft">{maneuvers.length}</span>}</button>
+      <div className="shell">
+        <nav className="rail" aria-label="Primary">
+          <button className="logo" onClick={() => setView("overview")} aria-label="SatCollivo home"><Orbit size={20} /></button>
+          <div className="rail-nav">
+            {nav.map(([id, Icon, label]) => (
+              <button key={id} className={view === id ? "nav active" : "nav"} onClick={() => setView(id)} aria-label={label}>
+                <Icon size={19} /><span className="tip">{label}</span>
+                {id === "threats" && threats.length > 0 && <i className="dot crit" />}
+                {id === "maneuvers" && maneuvers.length > 0 && <i className="dot" />}
+              </button>
             ))}
-          </nav>
-          <div className="sidebar-note"><ShieldCheck size={18} /><div><b>Decision support</b><span>Prototype calculations. Validate before operational use.</span></div></div>
-        </aside>
-
-        <main className="content">
-          <div className="page-heading">
-            <span className="eyebrow">MISSION CONTROL</span>
-            <h1>{view === "overview" ? "Orbital situation" : view === "data" ? "System" : view}</h1>
-            <p>Select a satellite, inspect its orbit, run the assessment, then review any risks.</p>
           </div>
+          <div className="rail-foot">
+            <button className="nav" onClick={refresh} aria-label="Refresh"><RefreshCw size={17} className={loading ? "spin" : ""} /><span className="tip">Refresh data</span></button>
+            <button className="nav" onClick={flip} aria-label="Toggle theme">{theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}<span className="tip">{theme === "dark" ? "Light theme" : "Dark theme"}</span></button>
+          </div>
+        </nav>
 
-          {view === "overview" && (
+        <main className={view === "overview" ? "main is-overview" : "main"}>
+          {error && <div className="error"><AlertTriangle size={15} /><span>{error}</span><button onClick={() => setError("")}><X size={15} /></button></div>}
+
+          {view === "overview" ? (
             <>
-              <div className="metrics">
-                <Metric icon={Database} label="Tracked records" value={stats?.total_records ?? "—"} />
-                <Metric icon={Satellite} tone="var(--accent2)" label="Unique objects" value={stats?.unique_objects ?? "—"} />
-                <Metric icon={Target} tone="var(--warn)" label="Conjunction events" value={stats?.event_count ?? 0} />
-                <Metric icon={Zap} tone="var(--crit)" label="Maneuvers flagged" value={stats?.maneuver_count ?? 0} />
-              </div>
-
-              <section className="assessment-card">
-                <div>
-                  <span className="eyebrow">STEP 01 · CHOOSE A PRIMARY</span>
-                  <h2>{selected?.name || "Select an object"} {selectedIsDocked && <span className="status-badge">DOCKED</span>}</h2>
-                  <p>{selected ? `NORAD ${selected.norad_id} · ${selected.object_type || "Tracked object"}` : "Search the catalog below."}</p>
-                  {selectedIsDocked && <div className="selection-warning">This object is physically docked. Select its host station or spacecraft for collision assessment.</div>}
-                </div>
-                <div className="assessment-actions">
-                  <select value={hours} onChange={(e) => setHours(Number(e.target.value))}>
-                    <option value={1}>1 hour</option><option value={6}>6 hours</option><option value={24}>24 hours</option><option value={48}>48 hours</option><option value={72}>72 hours</option>
-                  </select>
-                  <button className="primary" disabled={!selected || selectedIsDocked || assessment?.status === "running"} onClick={runAssessment}>
-                    {assessment?.status === "running" ? <Loader2 className="spin" size={15} /> : <Play size={15} />}
-                    {assessment?.status === "running" ? "Running…" : selectedIsDocked ? "Select host" : "Run assessment"}
-                  </button>
-                </div>
-              </section>
-
-              <section className="main-grid">
-                <div className="card">
-                  <CardHeader title="3D ORBIT" subtitle={orbit ? `${orbit.name} · 120 minute propagation` : "Select an object"} />
-                  <Orbit3D orbit={orbit} theme={theme} />
-                  {orbit && <div className="telemetry"><span>FRAME <b>TEME</b></span><span>STEP <b>60 SEC</b></span><span>SAMPLES <b>{orbit.points.length}</b></span></div>}
+              <section className="stage scope-dark">
+                <Orbit3D orbit={orbit} offset={190} />
+                <div className="hud">
+                  <div className="hero">
+                    <span className="live"><i /> LIVE · ORBITAL SAFETY CONSOLE</span>
+                    <h1>{selected?.name || "Select an object"}</h1>
+                    <p>{selected ? `NORAD ${selected.norad_id} · ${selected.object_type || "Tracked object"}` : "Search the catalog to begin."}</p>
+                    <div className="chips">
+                      {alt && <><span>PERIGEE <b>{alt.lo} km</b></span><span>APOGEE <b>{alt.hi} km</b></span></>}
+                      {orbit && <span>FRAME <b>TEME</b></span>}
+                      {selectedIsDocked && <span className="warn">DOCKED · SELECT HOST</span>}
+                    </div>
+                  </div>
+                  <div className="kpis">
+                    <Kpi label="Tracked" value={stats?.unique_objects ?? "—"} />
+                    <Kpi label="Conjunctions" value={stats?.event_count ?? 0} />
+                    <Kpi label="Threats" value={threats.length} tone={threats.length ? "crit" : ""} />
+                    <Kpi label="Maneuvers" value={stats?.maneuver_count ?? 0} tone={stats?.maneuver_count ? "warn" : ""} />
+                  </div>
                 </div>
 
-                <div className="card explorer">
-                  <CardHeader title="OBJECT EXPLORER" subtitle="Search by name or NORAD ID" />
-                  <div className="search-box"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ISS or 25544" /></div>
+                <aside className="finder glass">
+                  <div className="search-box"><Search size={15} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name or NORAD ID" /></div>
                   <div className="object-list">
-                    {objects.slice(0, 8).map((object) => (
-                      <button key={object.norad_id} className={selected?.norad_id === object.norad_id ? "object-row chosen" : "object-row"} onClick={() => choose(object)}>
-                        <span><b>{object.name || "Unknown object"} {object.docked && <em className="docked-inline">DOCKED</em>}</b><small>NORAD {object.norad_id}</small></span>
-                        <em>{object.docked ? "DOCKED" : object.object_type || "UNKNOWN"}</em>
+                    {objects.slice(0, 7).map((o) => (
+                      <button key={o.norad_id} className={selected?.norad_id === o.norad_id ? "object-row chosen" : "object-row"} onClick={() => choose(o)}>
+                        <span><b>{o.name || "Unknown object"}</b><small>NORAD {o.norad_id}</small></span>
+                        <em className={o.docked ? "tag warn" : "tag"}>{o.docked ? "DOCKED" : o.object_type || "UNKNOWN"}</em>
                       </button>
                     ))}
                     {!objects.length && <div className="empty">No matching objects.</div>}
                   </div>
-                  <button className="link-button" onClick={() => setView("objects")}>Browse catalog <ArrowRight size={14} /></button>
+                  <button className="link-button" onClick={() => setView("objects")}>Browse full catalog <ArrowRight size={14} /></button>
+                </aside>
+
+                <div className="dock glass">
+                  <div className="seg" role="group" aria-label="Assessment window">
+                    {[1, 6, 24, 48, 72].map((h) => <button key={h} className={hours === h ? "on" : ""} onClick={() => setHours(h)}>{h}h</button>)}
+                  </div>
+                  <button className="primary" disabled={!selected || selectedIsDocked || assessment?.status === "running"} onClick={runAssessment}>
+                    {assessment?.status === "running" ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
+                    {assessment?.status === "running" ? "Running…" : selectedIsDocked ? "Select host" : "Run conjunction assessment"}
+                  </button>
                 </div>
+                <span className="drag-hint">DRAG TO ROTATE · ⌘/CTRL + SCROLL TO ZOOM · ORBIT NOT TO SCALE</span>
               </section>
 
-              <section className="card">
-                <CardHeader title="RECENT CONJUNCTIONS" subtitle="Independent objects only · docked objects excluded" />
-                <EventTable events={events.slice(0, 8)} onSelect={setDetail} loading={loading} />
+              <section className="feed">
+                <div className="feed-head"><div><span className="eyebrow">RECENT CONJUNCTIONS</span><h2>Independent objects only</h2></div><button className="link-inline" onClick={() => setView("conjunctions")}>View all <ArrowRight size={14} /></button></div>
+                <div className="card"><EventTable events={events.slice(0, 8)} onSelect={setDetail} loading={loading} /></div>
               </section>
             </>
+          ) : (
+            <div className="page-heading"><span className="eyebrow">SATCOLLIVO</span><h1>{view === "data" ? "System" : view}</h1></div>
           )}
 
           {view === "objects" && <section className="card"><CardHeader title="TRACKED OBJECTS" subtitle={`${objects.length} objects matching your search`} /><div className="toolbar"><div className="search-box wide"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name or NORAD ID" /></div></div><div className="catalog">{objects.map((object) => <button key={object.norad_id} className={selected?.norad_id === object.norad_id ? "catalog-item selected" : "catalog-item"} onClick={() => choose(object)}><span className="catalog-icon"><Satellite size={17} /></span><span><b>{object.name || "Unknown object"}</b><small>NORAD {object.norad_id}</small></span><em>{object.object_type || "UNKNOWN"}</em></button>)}</div></section>}
@@ -219,7 +215,7 @@ function App() {
   );
 }
 
-function Metric({ label, value, icon: Icon, tone }) { return <div className="metric" style={tone ? { "--tone": tone } : undefined}><div className="m-icon">{Icon && <Icon size={17} />}</div><span>{label}</span><strong>{value}</strong><small>LIVE DATABASE</small></div>; }
+function Kpi({ label, value, tone = "" }) { return <div className={`kpi ${tone}`}><strong>{value}</strong><span>{label}</span></div>; }
 function CardHeader({ title, subtitle }) { return <div className="card-header"><div><span>{title}</span><small>{subtitle}</small></div></div>; }
 function InfoRow({ label, value }) { return <div className="info-row"><span>{label}</span><b>{value ?? "—"}</b></div>; }
 
