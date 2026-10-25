@@ -131,7 +131,7 @@ function App() {
               ["maneuvers", Zap, "Maneuvers"],
               ["data", Database, "System"]
             ].map(([id, Icon, label]) => (
-              <button key={id} className={view === id ? "nav active" : "nav"} onClick={() => setView(id)}><Icon size={17} />{label}</button>
+              <button key={id} className={view === id ? "nav active" : "nav"} onClick={() => setView(id)}><Icon size={17} />{label}{id === "threats" && threats.length > 0 && <span className="count">{threats.length}</span>}{id === "maneuvers" && maneuvers.length > 0 && <span className="count soft">{maneuvers.length}</span>}</button>
             ))}
           </nav>
           <div className="sidebar-note"><ShieldCheck size={18} /><div><b>Decision support</b><span>Prototype calculations. Validate before operational use.</span></div></div>
@@ -140,17 +140,17 @@ function App() {
         <main className="content">
           <div className="page-heading">
             <span className="eyebrow">MISSION CONTROL</span>
-            <h1>{view === "overview" ? "Orbital situation" : view}</h1>
+            <h1>{view === "overview" ? "Orbital situation" : view === "data" ? "System" : view}</h1>
             <p>Select a satellite, inspect its orbit, run the assessment, then review any risks.</p>
           </div>
 
           {view === "overview" && (
             <>
               <div className="metrics">
-                <Metric label="Tracked records" value={stats?.total_records ?? "—"} />
-                <Metric label="Unique objects" value={stats?.unique_objects ?? "—"} />
-                <Metric label="Conjunction events" value={stats?.event_count ?? 0} />
-                <Metric label="Maneuvers flagged" value={stats?.maneuver_count ?? 0} />
+                <Metric icon={Database} label="Tracked records" value={stats?.total_records ?? "—"} />
+                <Metric icon={Satellite} tone="var(--accent2)" label="Unique objects" value={stats?.unique_objects ?? "—"} />
+                <Metric icon={Target} tone="var(--warn)" label="Conjunction events" value={stats?.event_count ?? 0} />
+                <Metric icon={Zap} tone="var(--crit)" label="Maneuvers flagged" value={stats?.maneuver_count ?? 0} />
               </div>
 
               <section className="assessment-card">
@@ -219,12 +219,12 @@ function App() {
   );
 }
 
-function Metric({ label, value }) { return <div className="metric"><span>{label}</span><strong>{value}</strong><small>LIVE DATABASE</small></div>; }
+function Metric({ label, value, icon: Icon, tone }) { return <div className="metric" style={tone ? { "--tone": tone } : undefined}><div className="m-icon">{Icon && <Icon size={17} />}</div><span>{label}</span><strong>{value}</strong><small>LIVE DATABASE</small></div>; }
 function CardHeader({ title, subtitle }) { return <div className="card-header"><div><span>{title}</span><small>{subtitle}</small></div></div>; }
 function InfoRow({ label, value }) { return <div className="info-row"><span>{label}</span><b>{value ?? "—"}</b></div>; }
 
 function EventTable({ events = [], onSelect, loading }) {
-  return <div className="table-wrap"><div className="table head"><span>PRIMARY</span><span>SECONDARY</span><span>TCA</span><span>MISS</span><span>PC</span><span>RISK</span></div>{events.map((event, i) => <button className="table row" key={event.id || i} onClick={() => onSelect?.(event)}><span>{event.primary_name || `#${event.primary_norad_id}`}</span><span>{event.secondary_name || `#${event.secondary_norad_id}`}</span><span>{timeText(event.tca)}</span><span>{Number(event.miss_distance_km).toFixed(3)} km</span><span className="mono">{pcText(event.probability_of_collision)}</span><span><b className={`risk ${risk(event.probability_of_collision).toLowerCase()}`}>{risk(event.probability_of_collision)}</b></span></button>)}{!events.length && !loading && <div className="empty">No independent conjunctions stored yet. Run an assessment to create history.</div>}</div>;
+  return <div className="table-wrap"><div className="table head"><span>PRIMARY</span><span>SECONDARY</span><span>TCA</span><span>MISS</span><span>PC</span><span>RISK</span></div>{events.map((event, i) => <button className="table row" data-risk={risk(event.probability_of_collision).toLowerCase()} key={event.id || i} onClick={() => onSelect?.(event)}><span>{event.primary_name || `#${event.primary_norad_id}`}</span><span>{event.secondary_name || `#${event.secondary_norad_id}`}</span><span>{timeText(event.tca)}</span><span>{Number(event.miss_distance_km).toFixed(3)} km</span><span className="mono">{pcText(event.probability_of_collision)}</span><span><b className={`risk ${risk(event.probability_of_collision).toLowerCase()}`}>{risk(event.probability_of_collision)}</b></span></button>)}{!events.length && !loading && <div className="empty">No independent conjunctions stored yet. Run an assessment to create history.</div>}</div>;
 }
 
 function AssessmentModal({ data, onClose }) {
