@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, CheckCircle2, Database, Gauge, Loader2, Orbit, Play, RefreshCw, Search, Satellite, ShieldCheck, Target, X, Zap, ArrowRight } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Database, Gauge, Loader2, Orbit, Play, RefreshCw, Search, Satellite, ShieldCheck, Target, X, Zap, ArrowRight, Sun, Moon } from "lucide-react";
 import Orbit3D from "./Orbit3D.jsx";
 import "./styles.css";
 
@@ -86,7 +86,7 @@ function App() {
     }
   };
 
-  useEffect(() => { refresh(); searchObjects("25544"); }, []);
+  useEffect(() => {\n    document.documentElement.dataset.theme = theme;\n    localStorage.setItem("satcollivo-theme", theme);\n  }, [theme]);\n\n  useEffect(() => { refresh(); searchObjects("25544"); }, []);
   useEffect(() => {
     const t = setTimeout(() => searchObjects(query), 250);
     return () => clearTimeout(t);
@@ -109,7 +109,7 @@ function App() {
           <span className="brand-mark"><Orbit size={20} /></span>
           <span><strong>SatCollivo</strong><small>ORBITAL SAFETY CONSOLE</small></span>
         </button>
-        <div className="status"><i /> SYSTEM ONLINE <button className="refresh" onClick={refresh} aria-label="Refresh"><RefreshCw size={15} /></button></div>
+        <div className="status"><i /> SYSTEM ONLINE <button className="theme-toggle" onClick={() => setTheme(current => current === "dark" ? "light" : "dark")} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>{theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}<span>{theme === "dark" ? "LIGHT" : "DARK"}</span></button><button className="refresh" onClick={refresh} aria-label="Refresh"><RefreshCw size={15} /></button></div>
       </header>
 
       {error && <div className="error"><AlertTriangle size={15} /><span>{error}</span><button onClick={() => setError("")}><X size={15} /></button></div>}
@@ -168,7 +168,7 @@ function App() {
               <section className="main-grid">
                 <div className="card">
                   <CardHeader title="3D ORBIT" subtitle={orbit ? `${orbit.name} · 120 minute propagation` : "Select an object"} />
-                  <Orbit3D orbit={orbit} />
+                  <Orbit3D orbit={orbit} theme={theme} />
                   {orbit && <div className="telemetry"><span>FRAME <b>TEME</b></span><span>STEP <b>60 SEC</b></span><span>SAMPLES <b>{orbit.points.length}</b></span></div>}
                 </div>
 
