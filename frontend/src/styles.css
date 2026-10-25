@@ -90,3 +90,5 @@
 :root[data-theme="light"] .orbit-viewer{background:#f1f6f9}
 :root[data-theme="light"] .orbit-empty{background:#f1f6f9;color:#66838e}
 @media(max-width:700px){.orbit-viewer{height:360px;min-height:360px}}
+
+@media(max-width:700px){.status{display:flex;font-size:0;gap:6px}.status i{display:none}.theme-toggle span{font-size:9px}}
